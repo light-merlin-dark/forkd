@@ -64,6 +64,23 @@ Then confirm `GET /v1/snapshots` lists the tag under the merlin snapshot root.
 - A create/exec/destroy receipt is not a product gate. Seats still have to
   see the surface, compare data, and land a change.
 
+## Granis admin session (HyperAgent.com)
+
+The focused Chrome tab is often Cloudflare or Gmail, even when a HyperAgent
+tab is already enabled. Never pair/session against the focused tab.
+
+```bash
+bun /Users/merlin/_dev/granis/granis-cli/granis.ts browser doctor --json
+# pick enabledTabs[] where origin is https://hyperagent.com
+bun /Users/merlin/_dev/granis/granis-cli/granis.ts browser session new \
+  --expected-origin https://hyperagent.com \
+  --instance <id> --window <windowId> --tab <tabId>
+```
+
+Durable trust ("Always allow local CLI sessions on this site") on the
+HyperAgent origin makes `enable-tab` unattended. One session is enough for
+`hyperagent -s <id>` admin calls.
+
 ## Health
 
 ```bash

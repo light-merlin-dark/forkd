@@ -813,8 +813,11 @@ fn kernel_supports_kvm_clock_realtime(release: &str) -> bool {
 
 /// Default per-call timeout. Most Firecracker API calls return in <1 ms.
 const DEFAULT_API_TIMEOUT_SECS: u64 = 10;
-/// Snapshot create writes the full memory image to disk and is I/O bound.
-/// 512 MiB measured at ~3.3 s on our dev box; allow 60 s for slower disks.
+/// Full and diff snapshot creation writes guest memory to disk and is I/O
+/// bound. An 8 GiB full snapshot can exceed 60 seconds on otherwise healthy
+/// storage, so leave enough headroom for large production-sized guests.
+const FULL_SNAPSHOT_TIMEOUT_SECS: u64 = 300;
+/// Vmstate-only and prewarm snapshots do not copy the full guest memory image.
 const SNAPSHOT_TIMEOUT_SECS: u64 = 60;
 /// OOM-killer hint for forked children. Range is -1000..1000; positive
 /// values make the process more likely to be killed under memory
@@ -1238,7 +1241,7 @@ impl Vm {
             "PUT",
             "/snapshot/create",
             &body.to_string(),
-            SNAPSHOT_TIMEOUT_SECS,
+            FULL_SNAPSHOT_TIMEOUT_SECS,
         )?;
         Ok(Snapshot {
             vmstate,
@@ -1285,7 +1288,7 @@ impl Vm {
             "PUT",
             "/snapshot/create",
             &body.to_string(),
-            SNAPSHOT_TIMEOUT_SECS,
+            FULL_SNAPSHOT_TIMEOUT_SECS,
         )?;
         // Logical size = the full-snapshot size; physical size on disk is
         // smaller (sparse holes). Capture both so callers can report
@@ -1938,6 +1941,18 @@ mod tests {
             "quickstart boot_args has a clocksource= token after kvm-clock \
              which would override it: `{}`",
             cfg.boot_args
+        );
+    }
+
+    #[test]
+    fn full_snapshot_timeout_has_large_guest_headroom() {
+        assert!(
+            FULL_SNAPSHOT_TIMEOUT_SECS >= 300,
+            "full snapshots of 8 GiB guests can exceed the old 60-second timeout",
+        );
+        assert!(
+            SNAPSHOT_TIMEOUT_SECS < FULL_SNAPSHOT_TIMEOUT_SECS,
+            "small vmstate-only snapshots should retain their tighter timeout",
         );
     }
 

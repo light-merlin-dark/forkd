@@ -50,6 +50,10 @@ rm -f /etc/resolv.conf
     echo "nameserver 8.8.8.8"
 } > /etc/resolv.conf
 
+# Raise the open-file limit before the agent starts: every exec inherits it, and Bun's test runner exceeds the
+# kernel default of 1024 (27 Oct 2026, Granis capsule: `bun test` failed EMFILE reading its preload and tsconfig).
+ulimit -n 65536 2>/dev/null || ulimit -n 4096 2>/dev/null || true
+
 echo "forkd-init: launching agent..."
 # Find python: Ubuntu has /usr/bin/python3; official python:* images have /usr/local/bin/python3.
 for PY in /usr/local/bin/python3 /usr/bin/python3 /usr/local/bin/python /usr/bin/python; do

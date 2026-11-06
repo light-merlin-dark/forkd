@@ -4,6 +4,7 @@
 //!   /sys/fs/cgroup/forkd/                  ← parent (created on first use)
 //!     ├── child-1/                         ← leaf, one per child VM
 //!     │   ├── memory.max                   ← limit in bytes
+//!     │   ├── memory.swap.max              ← 0: the cap is the whole budget, never a swap allowance
 //!     │   └── cgroup.procs                 ← child Firecracker pid lives here
 //!     └── child-2/ ...
 //!
@@ -106,11 +107,29 @@ pub fn place_child(name: &str, pid: u32, memory_max_bytes: u64) -> Result<PathBu
     if !child.exists() {
         std::fs::create_dir(&child).with_context(|| format!("mkdir {}", child.display()))?;
     }
-    std::fs::write(child.join("memory.max"), memory_max_bytes.to_string())
-        .with_context(|| format!("set memory.max on {}", child.display()))?;
+    write_memory_limits(&child, memory_max_bytes)?;
     std::fs::write(child.join("cgroup.procs"), pid.to_string())
         .with_context(|| format!("attach pid {pid} to {}", child.display()))?;
     Ok(child)
+}
+
+/// Write a child's memory ceiling, before its process is attached.
+///
+/// `memory.max` alone is not a ceiling: cgroup v2's `memory.swap.max` defaults to `max`, so a child at its cap swaps
+/// without limit and pushes the host into swap instead of being reclaimed or OOM-killed inside its own cgroup. Measured
+/// 5 Nov 2026 on a 16 GB host: two idle 4 GiB children held 2.3 and 2.9 GB in swap, 5.2 of the host's 7.6 GB swapped,
+/// beside a protected service. Writing `memory.swap.max 0` makes `memory.max` the whole budget.
+///
+/// It is written before `cgroup.procs`, so the process never runs with swap allowed. A host built without swap
+/// accounting has no `memory.swap.max`; there is no swap to bound there, so its absence is not an error.
+pub fn write_memory_limits(child: &Path, memory_max_bytes: u64) -> Result<()> {
+    std::fs::write(child.join("memory.max"), memory_max_bytes.to_string())
+        .with_context(|| format!("set memory.max on {}", child.display()))?;
+    let swap_max = child.join("memory.swap.max");
+    if swap_max.exists() {
+        std::fs::write(&swap_max, "0").with_context(|| format!("set memory.swap.max on {}", child.display()))?;
+    }
+    Ok(())
 }
 
 /// Remove a child cgroup. Best-effort: returns Ok even if rmdir fails
@@ -131,6 +150,27 @@ mod tests {
         assert_eq!(mib_to_bytes(1), 1024 * 1024);
         assert_eq!(mib_to_bytes(256), 256 * 1024 * 1024);
         assert_eq!(mib_to_bytes(0), 0);
+    }
+
+    #[test]
+    fn memory_limits_close_swap_past_the_cap() {
+        let dir = std::env::temp_dir().join(format!("forkd-cgroup-limits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("memory.swap.max"), "max").unwrap();
+        write_memory_limits(&dir, mib_to_bytes(768)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("memory.max")).unwrap(), (768u64 * 1024 * 1024).to_string());
+        assert_eq!(std::fs::read_to_string(dir.join("memory.swap.max")).unwrap(), "0");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn memory_limits_without_swap_accounting_set_only_the_cap() {
+        let dir = std::env::temp_dir().join(format!("forkd-cgroup-noswap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_memory_limits(&dir, mib_to_bytes(256)).unwrap();
+        assert!(dir.join("memory.max").exists());
+        assert!(!dir.join("memory.swap.max").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
